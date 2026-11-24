@@ -225,8 +225,8 @@ button:focus-visible,input:focus-visible+span{outline:3px solid var(--cian);outl
 #pvid{position:absolute;inset:0;z-index:39;overflow:hidden;background:#05070c;opacity:0;transition:opacity .25s}
 #pvid.ver{opacity:1}
 #pv-fondo{position:absolute;inset:-40px;background:#05070c url(video/piramide/poster.jpg) center/cover;filter:blur(28px) brightness(.45);transform:scale(1.1)}
-#pv-cuadro{position:absolute;left:0;top:0;overflow:hidden;background:#000 url(video/piramide/poster.jpg) center/cover}
-#pv-cuadro video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 150ms linear}
+#pv-cuadro{position:absolute;left:0;top:0;overflow:hidden;background:#000}
+#pv-cuadro video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:none}
 #pv-cuadro video.on{opacity:1}
 #pv-cuadro.sacude{animation:pvSacude 280ms linear}
 @keyframes pvSacude{0%,100%{transform:none}15%{transform:translate(-9px,5px)}30%{transform:translate(8px,-6px)}45%{transform:translate(-6px,-4px)}60%{transform:translate(5px,5px)}80%{transform:translate(-3px,2px)}}
@@ -423,8 +423,10 @@ button:focus-visible,input:focus-visible+span{outline:3px solid var(--cian);outl
 <div id="pvid" class="oculto" role="dialog" aria-modal="true" aria-label="Pesca en la Pirámide">
   <div id="pv-fondo"></div>
   <div id="pv-cuadro">
-    <video id="pv-v0" muted playsinline preload="auto" disablepictureinpicture></video>
-    <video id="pv-v1" muted playsinline preload="auto" disablepictureinpicture></video>
+    <video id="pv-va" muted playsinline preload="auto" disablepictureinpicture></video>
+    <video id="pv-vc" muted playsinline preload="auto" disablepictureinpicture></video>
+    <video id="pv-vm" muted playsinline preload="auto" disablepictureinpicture></video>
+    <video id="pv-vm2" muted playsinline preload="auto" disablepictureinpicture></video>
     <div id="pv-marco"><i></i><i></i><i></i><i></i></div>
     <div id="pv-premio" aria-live="polite"><div id="pv-pez"><div id="pv-rayos"></div><div id="pv-halo"></div><img id="pv-img" alt="" draggable="false"><div id="pv-brillo"></div><i></i><i></i><i></i><i></i></div><div id="pv-textos"><h2 id="pv-nombre" class="disp"></h2><div id="pv-rz"></div><div id="pv-pago" class="disp"></div></div></div>
   </div>
@@ -514,7 +516,24 @@ const RITMO = {
   b: { ms: 700, vel: 1 },                /* espera con «¡ATENTO…!» (0,7 s) */
   c: { ini: .6, vel: 1.35, pique: 1.5 }, /* pique y cofre (≈2,3 s; salta el agua a 0,67 s) */
   m: { vel: 1.625 },                     /* marco: se arma (6,5 s del clip) a ≈4 s */
-  vieja: { tension: 2000 }               /* escena vieja de las otras 6: tensión ≈2 s */
+  vieja: { tension: 2000 },              /* escena vieja de las otras 6: tensión ≈2 s */
+  /* pirámide en video, Nivel A de la auditoría: «en» = segundos desde el toque; «ct» = segundo del clip que dispara el cambio (con red de +tolera s);
+     «ini» = segundo del clip donde arranca (queda buscado de antemano); vel = velocidad; ms = duraciones de efectos */
+  pv: {
+    a1: { en: 0, ini: .5, vel: 1.5 },                       /* lance */
+    a2: { en: .73, ct: 1.6, vel: 2.2 },                     /* la boya vuela */
+    a3: { en: 1.41, ct: 3.1, vel: 1, zoom: 1.7, zMs: 250, ox: .82, oy: .64, tx: -12, ty: -14 }, /* boya en el agua + «¡ATENTO…!» */
+    c1: { en: 2.46, ini: 1.46, vel: 1.2, flashMs: 80, flashOp: .6, zo: 1.12, zoMs: 180, sacMs: 250 }, /* corte seco al pique */
+    c2: { en: 3.49, pan: 42, zoom: 1.06, ms: 1120 },        /* paneo al cofre */
+    c3: { en: 4.61, ms: 320 },                              /* cofre quieto, tiembla */
+    m1: { en: 4.93, ini: .08, vel: 2.2, sube: 120, baja: 250, sacMs: 350, golpe: 1.1 }, /* explota: corte al marco bajo el destello */
+    m2: { en: 6.21, ini: 6.3, flashMs: 200, corte: 6.30 },  /* destello blanco y salto al marco armado */
+    golpe: { en: 6.41, esc: 1.15, ms: 220 },                /* el marco cae en su lugar */
+    premio: 6.65, cuenta: 6.90, boton: 8.30,
+    cuentaMs: { rosa: 900, rojo: 1400, dorado: 1400 },
+    sinM: .45,                                              /* sin m.mp4: premio a m1.en + sinM */
+    tolera: .15,
+  },
 };
 window.__mvT = {};
 function marcaT(n) { window.__mvT[n] = ahora(); }
@@ -875,6 +894,7 @@ const musica = (() => {
       return L;
     },
     reanudar() { if (gLobby) rampa(gLobby, 1, 1.5); },
+    bajar(v, dur = .3, t = 0) { if (gLobby) rampa(gLobby, v, dur, Math.max(0, t)); },
     /* fin de la jugada: corta la tensión si quedó prendida y devuelve el lobby (si no lo hace ya el jingle) */
     fin() {
       if (!actx) return;
@@ -1613,8 +1633,8 @@ async function pescar(res, b) {
    ========================================================= */
 const PV = (() => {
   const BASE = 'video/piramide/';
-  const st = { listo: false, url: {}, rect: { x: .22, y: .30, w: .56, h: .34 }, tMarco: null, fase: '', corre: false, rafLluvia: 0 };
-  const raiz = $('#pvid'), cuadro = $('#pv-cuadro'), V = [$('#pv-v0'), $('#pv-v1')];
+  const st = { listo: false, url: {}, rect: { x: .22, y: .30, w: .56, h: .34 }, tMarco: null, fase: '', corre: false, rafLluvia: 0, id: 0, raf: 0, mal: null };
+  const raiz = $('#pvid'), cuadro = $('#pv-cuadro'), V = { a: $('#pv-va'), c: $('#pv-vc'), m: $('#pv-vm'), m2: $('#pv-vm2') }, R = RITMO.pv;
   const marco = $('#pv-marco'), premio = $('#pv-premio');
 
   async function blob(n) {
@@ -1644,19 +1664,116 @@ const PV = (() => {
   async function precargar() {
     if (!location.protocol.startsWith('http')) return; /* file:// no puede bajar blobs */
     try {
-      const [a, b, c] = await Promise.all(['a.mp4', 'b.mp4', 'c.mp4'].map(blob));
-      st.url = { a, b, c, m: null };
+      const [a, c] = await Promise.all(['a.mp4', 'c.mp4'].map(blob));
+      st.url = { a, c, m: null };
       const h = await hay();
       if (h.m) try { st.url.m = await blob('m.mp4'); } catch (e) { st.url.m = null; }
       if (h.marcas) try { const r = await fetch(BASE + 'marcas.json', { cache: 'no-store' }); if (r.ok) leerMarcas(await r.json()); } catch (e) {}
-      cargar(V[0], st.url.a); cargar(V[1], st.url.b, true); V[0].currentTime = RITMO.a.ini;
+      cargar(V.a, st.url.a); cargar(V.c, st.url.c); if (st.url.m) { cargar(V.m, st.url.m); cargar(V.m2, st.url.m); }
+      await rebobinar();
       st.listo = true;
     } catch (e) { console.warn('pirámide en video: sin precarga, queda la escena vieja', e); }
   }
 
   function cargar(v, u, loop = false) { v.loop = loop; if (v.src !== u) { v.src = u; v.load(); } }
   function reproducir(v, vel = 1, ini = 0) { try { v.defaultPlaybackRate = vel; v.playbackRate = vel; if (Math.abs(v.currentTime - ini) > .05) v.currentTime = ini; const p = v.play(); return p && p.then ? p : Promise.resolve(); } catch (e) { return Promise.reject(e); } }
-  function mostrar(i) { V[i].classList.add('on'); V[1 - i].classList.remove('on'); }
+  /* deja el clip quieto en el segundo t, con el cuadro ya decodificado (máx. 3 s) */
+  function situar(v, t) {
+    return new Promise(ok => {
+      if (!v.getAttribute('src')) return ok();
+      let hecho = false; const fin = () => { if (hecho) return; hecho = true; clearTimeout(to); v.removeEventListener('seeked', fin); ok(); };
+      const to = setTimeout(fin, 3000);
+      const ir = () => { if (Math.abs(v.currentTime - t) < .01 && v.readyState >= 2) return fin(); v.addEventListener('seeked', fin); try { v.currentTime = t; } catch (e) { fin(); } };
+      if (v.readyState >= 1) ir(); else v.addEventListener('loadedmetadata', ir, { once: true });
+    });
+  }
+  const rebobinar = () => Promise.all([situar(V.a, R.a1.ini), situar(V.c, R.c1.ini), st.url.m ? situar(V.m, R.m1.ini) : 0, st.url.m ? situar(V.m2, R.m2.ini) : 0]);
+  /* corte seco: el nuevo y el viejo cambian en la misma tarea (sin fundido) */
+  function corte(de, a) { a.classList.add('on'); if (de && de !== a) de.classList.remove('on'); }
+  function vel(v, r) { v.defaultPlaybackRate = r; v.playbackRate = r; }
+  function arrancar(v) { try { const p = v.play(); if (p && p.catch) p.catch(e => st.mal && st.mal(e)); } catch (e) { st.mal && st.mal(e); } }
+  /* línea de tiempo en un rAF: cada evento sale por tiempo real (t) o, si tiene ct, cuando el clip llega a ct (red: t + tolera) */
+  function linea(ev, id, T0) {
+    ev.sort((x, y) => x.t - y.t); let i = 0;
+    return new Promise((ok, mal) => {
+      st.mal = mal;
+      const paso = () => {
+        if (st.id !== id) return ok();
+        const s = (ahora() - T0) / 1000;
+        while (i < ev.length) {
+          const e = ev[i];
+          if (!(e.ct != null ? (e.v.currentTime >= e.ct || s >= e.t + R.tolera) : s >= e.t)) break;
+          i++; try { e.fn(s); } catch (err) { return mal(err); }
+        }
+        if (i >= ev.length) return ok();
+        st.raf = requestAnimationFrame(paso);
+      };
+      paso();
+    });
+  }
+  function flash(kf, ms, blanco) {
+    if (reducido.matches) return;
+    const f = $('#pv-flash'); f.style.background = blanco ? '#fff' : '';
+    f.getAnimations().forEach(a => a.cancel()); f.animate(kf, { duration: ms, easing: 'linear' });
+  }
+  function sacude(ms, k = 1) {
+    if (reducido.matches) return;
+    const p = [[0, 0], [-9, 5], [8, -6], [-6, -4], [5, 5], [-3, 2], [0, 0]], o = [0, .15, .3, .45, .6, .8, 1];
+    cuadro.animate(p.map(([x, y], i) => ({ transform: `translate(${x * k}px,${y * k}px)`, offset: o[i] })), { duration: ms, easing: 'linear' });
+  }
+  /* tiempos de la jugada (s desde el toque); sin m.mp4 el premio se adelanta y todo lo de después corre igual */
+  function guion(res, T0) {
+    const conM = !!st.url.m, d = conM ? 0 : R.premio - (R.m1.en + R.sinM);
+    const ms = reducido.matches ? 300 : (R.cuentaMs[res.rareza] || 1400), premio = R.premio - d, cuenta = R.cuenta - d, fin = cuenta + ms / 1000;
+    return { T0, conM, premio, cuenta, ms, fin, boton: Math.max(R.boton - d, fin) };
+  }
+  /* sonido de la jugada: todo se agenda en el toque con el reloj de audio (≈150 ms de anticipación) */
+  function sonPV(G, id) {
+    if (typeof actx === 'undefined' || !actx) return;
+    const ok = () => listo() && st.corre && st.id === id;
+    const en = (t, fn) => reloj.en(Math.max(0, t - (ahora() - G.T0) / 1000), tA => { if (ok()) fn(tA); });
+    const baja = (v, dur) => tA => musica.bajar(v, dur, tA - actx.currentTime);
+    const tic = (f, vol = .03) => tA => tono(f, { en: tA, tipo: 'square', a: .001, dur: .012, vol });
+    en(0, tA => { tono(1800, { en: tA, tipo: 'square', a: .001, dur: .012, vol: .05 }); soplo({ en: tA, tipo: 'bandpass', f: 400, f2: 2400, q: 1.2, a: .04, dur: .35, vol: .18 }); });
+    en(.53, tA => { soplo({ en: tA, tipo: 'highpass', f: 2500, a: .005, dur: .12, vol: .16 }); tono(2200, { en: tA, f2: 600, a: .01, dur: .35, vol: .05 }); });
+    en(.73, tA => tono(220, { en: tA, tipo: 'sawtooth', f2: 330, a: .05, sos: .55, dur: .12, vol: .035, filtro: { tipo: 'lowpass', f: 900 } }));
+    en(1.41, tA => { tono(600, { en: tA, f2: 140, a: .003, dur: .16, vol: .3 }); soplo({ en: tA, tipo: 'lowpass', f: 1800, f2: 300, a: .005, dur: .25, vol: .15 }); baja(.25, .15)(tA); });
+    for (const t of [1.6, 2.0]) en(t, tA => { tono(150, { en: tA, f2: 100, a: .004, dur: .12, vol: .35 }); tono(130, { en: tA + .16, f2: 90, a: .004, dur: .14, vol: .28 }); soplo({ en: tA, tipo: 'highpass', f: 5000, a: .001, dur: .012, vol: .04 }); });
+    en(2.2, baja(0, .05));
+    en(2.46, tA => {
+      tono(200, { en: tA, f2: 120, a: .002, dur: .3, vol: .5 }); soplo({ en: tA, tipo: 'highpass', f: 3000, a: .001, dur: .05, vol: .25 });
+      fm(1318.5, { en: tA + .02, vol: .09, dur: .5 }); fm(1318.5, { en: tA + .14, vol: .07, dur: .6 });
+      soplo({ en: tA, tipo: 'lowpass', f: 3500, f2: 300, a: .01, dur: .6, vol: .25 }); baja(.22, .3)(tA);
+    });
+    /* carrete: clics de 14 a 30 por segundo + tono que sube */
+    en(2.55, tA => tono(330, { en: tA, tipo: 'triangle', f2: 660, a: .1, sos: 1.8, dur: .15, vol: .05 }));
+    for (let t = 2.55; t < 4.6;) { en(t, tic(3200)); t += 1 / (14 + 16 * (t - 2.55) / 2.05); }
+    en(3.49, tA => { soplo({ en: tA, tipo: 'lowpass', f: 2500, f2: 400, a: .02, dur: .5, vol: .25 }); tono(140, { en: tA, f2: 90, dur: .3, vol: .3 }); });
+    for (const t of [4.66, 4.76, 4.86]) en(t, tic(2600, .05));
+    en(R.m1.en, tA => {
+      tono(300, { en: tA, f2: 150, a: .002, dur: .5, vol: .5 }); tono(160, { en: tA, tipo: 'triangle', f2: 100, dur: .7, vol: .3 });
+      soplo({ en: tA, tipo: 'lowpass', f: 3000, f2: 150, a: .005, dur: .9, vol: .3 }); soplo({ en: tA, tipo: 'bandpass', f: 4000, q: 2, a: .001, dur: .06, vol: .25 });
+      for (const n of [72, 76, 79, 84]) fm(m2f(n), { en: tA + .01, vol: .05, dur: 1.2 });
+    });
+    if (G.conM) {
+      for (let t = 5;  t < 6.2;) { en(t, tA => fm(2600 * (1 + Math.random() * .15), { en: tA, vol: .025, dur: .18, ratio: 2.1 })); t += 1 / (30 - 18 * (t - 5) / 1.2); }
+      [72, 76, 79, 84, 88, 91, 96, 100].forEach((n, i) => en(5 + i * .09, tA => fm(m2f(n), { en: tA, vol: .05, dur: .4 })));
+      en(R.m2.en, tA => soplo({ en: tA, tipo: 'bandpass', f: 500, f2: 3500, a: .18, dur: .04, vol: .25 }));
+      en(R.golpe.en, tA => {
+        tono(180, { en: tA, f2: 120, dur: .4, vol: .4 }); fm(220, { en: tA, ratio: 1.4, idx: 3, dur: 1.4, vol: .08 });
+        for (let i = 0; i < 6; i++) fm(2637 * (1 + i * .06), { en: tA + i * .05, vol: .035, dur: .3 });
+      });
+    }
+    en(G.premio, tA => tono(900, { en: tA, f2: 300, a: .002, dur: .12, vol: .2 }));
+    const nT = Math.max(1, Math.round(G.ms / 50));
+    for (let i = 0; i < nT; i++) en(G.cuenta + i * .05, tA => tono(1200 * Math.pow(2, i / nT), { en: tA, tipo: 'triangle', a: .001, dur: .03, vol: .06 }));
+    en(G.fin, tA => {
+      tono(1800, { en: tA, tipo: 'square', a: .001, dur: .04, vol: .06, filtro: { tipo: 'bandpass', f: 2500, q: 3 } }); fm(m2f(96), { en: tA + .03, vol: .09, dur: .9 });
+      for (const n of [84, 88, 91]) fm(m2f(n), { en: tA + .03, vol: .04, dur: .8 });
+      for (let i = 0; i < 6; i++) fm(2600 * (1 + Math.random() * .2), { en: tA + Math.random() * .2, vol: .025, dur: .18, ratio: 2.1 });
+    });
+    en(G.boton, tA => tono(700, { en: tA, f2: 1400, a: .003, dur: .12, vol: .15 }));
+  }
   function finVideo(v, maxMs) {
     return new Promise((ok, mal) => {
       const t = setTimeout(() => mal(new Error('video trabado')), maxMs);
@@ -1866,9 +1983,10 @@ const PV = (() => {
     motor();
   }
 
-  function mostrarPremio(res, cssMarco) {
+  /* op.ms = duración de la cuenta; op.retraso = ms antes de contar; op.mudo = sin sfx.pez/ficha/campanita (los pone sonPV). Devuelve cuándo termina la cuenta */
+  function mostrarPremio(res, cssMarco, op = {}) {
     st.fase = 'premio'; marcaT('premio');
-    const z = RZ[res.rareza], red = reducido.matches;
+    const z = RZ[res.rareza], red = reducido.matches, mudo = !!op.mudo;
     premio.style.setProperty('--c', z.color);
     $('#pv-img').src = `img/pez-${res.rareza}.png`;
     premio.style.setProperty('--m', `url(img/pez-${res.rareza}.png)`);
@@ -1876,93 +1994,121 @@ const PV = (() => {
     $('#pv-nombre').textContent = res.pezNombre;
     $('#pv-rz').textContent = `${z.forma} ${z.nombre}`;
     if (cssMarco) marco.classList.add('ver');
-    premio.classList.add('ver'); sfx.pez(res.rareza === 'dorado'); musica.jingle(res.rareza); impactoPez(z.color, res.rareza === 'dorado');
-    estado.saldo += res.pago; contarSaldo(estado.saldo, 1400);
-    const el = $('#pv-pago'), t0 = ahora(), dur = red ? 300 : 1400; let ult = -1;
-    const paso = () => {
-      const k = clamp((ahora() - t0) / dur, 0, 1);
-      el.textContent = '+' + fmt(res.pago * ease.ent(k));
-      const n = Math.floor(k * 16); if (n !== ult) { ult = n; if (n < 16) { sfx.ficha(n / 15); if (n % 2 === 0) chispaAlSaldo(); } else sfx.campanita(); }
-      if (k < 1) requestAnimationFrame(paso);
-    };
-    paso();
+    premio.classList.add('ver'); if (!mudo) sfx.pez(res.rareza === 'dorado'); musica.jingle(res.rareza); impactoPez(z.color, res.rareza === 'dorado');
+    estado.saldo += res.pago;
+    const el = $('#pv-pago'), dur = red ? 300 : (op.ms || 1400), hasta = estado.saldo; el.textContent = '+0';
+    return new Promise(ok => setTimeout(() => {
+      contarSaldo(hasta, dur);
+      const t0 = ahora(); let ult = -1;
+      const paso = () => {
+        const k = clamp((ahora() - t0) / dur, 0, 1);
+        el.textContent = '+' + fmt(res.pago * ease.ent(k));
+        const n = Math.floor(k * 16); if (n !== ult) { ult = n; if (n < 16) { if (!mudo) sfx.ficha(n / 15); if (n % 2 === 0) chispaAlSaldo(); } else if (!mudo) sfx.campanita(); }
+        if (k < 1) requestAnimationFrame(paso); else ok();
+      };
+      paso();
+    }, op.retraso || 0));
   }
 
   function limpiar() {
-    st.corre = false; st.fase = ''; pararFx();
-    V.forEach(v => { v.pause(); v.onended = v.onerror = null; v.classList.remove('on'); });
+    st.corre = false; st.id++; cancelAnimationFrame(st.raf); st.mal = null; st.fase = ''; pararFx();
+    Object.values(V).forEach(v => {
+      v.pause(); v.onended = v.onerror = null; v.classList.remove('on');
+      v.getAnimations().forEach(x => x.cancel()); v.style.transform = ''; vel(v, 1);
+    });
+    cuadro.getAnimations().forEach(x => x.cancel()); $('#pv-flash').getAnimations().forEach(x => x.cancel());
     marco.classList.remove('ver'); premio.classList.remove('ver', 'dorado'); cuadro.classList.remove('sacude', 'sacude-l');
     $('#pv-flash').classList.remove('go', 'suave'); $('#pv-dorado').classList.remove('ver');
     raiz.classList.remove('ver', 'fin'); raiz.classList.add('oculto');
     $('#app').classList.remove('en-pesca'); estado.escena = 'universo';
-    cargar(V[0], st.url.a); cargar(V[1], st.url.b, true); try { V[0].currentTime = RITMO.a.ini; } catch (e) {}
-    $('#pv-atento').classList.remove('ver'); musica.fin();
+    rebobinar(); $('#pv-atento').classList.remove('ver'); musica.fin();
   }
 
-  /* se llama dentro del toque: play() sincrónico */
+  /* se llama dentro del toque: play() sincrónico y el sonido agendado ahí mismo */
   function jugar(res, b) {
-    st.corre = true; st.fase = 'a'; marcaT('a'); sfx.puerto();
+    const id = ++st.id; st.corre = true; st.fase = 'a'; marcaT('a');
     raiz.classList.remove('oculto', 'fin'); medir();
-    cargar(V[0], st.url.a);
-    const p0 = reproducir(V[0], RITMO.a.vel, RITMO.a.ini);
-    return secuencia(res, b, p0);
+    const im = $('#pv-img'); im.src = `img/pez-${res.rareza}.png`; if (im.decode) im.decode().catch(() => {});
+    const G = guion(res, (window.__mvT && window.__mvT.tap) || ahora()); window.__mvGuion = G;
+    V.a.onerror = V.c.onerror = () => st.mal && st.mal(new Error('error de video'));
+    vel(V.a, R.a1.vel);
+    let p0; try { p0 = V.a.play(); } catch (e) { p0 = Promise.reject(e); }
+    corte(null, V.a);
+    sonPV(G, id);
+    return secuencia(res, b, Promise.resolve(p0), id, G);
   }
-  async function secuencia(res, b, p0) {
-    let cofre = false, cssMarco = !st.url.m;
+  async function secuencia(res, b, p0, id, G) {
+    let cofre = false, cssMarco = !G.conM, sinM2 = !G.conM;
+    const red = () => reducido.matches;
+    const sinM = e => { if (sinM2) return; console.warn('M falló, marco CSS', e); sinM2 = true; cssMarco = true; corte(V.m, V.c); V.m.pause(); };
     try {
       $('#app').classList.add('en-pesca'); estado.escena = 'pesca';
       requestAnimationFrame(() => raiz.classList.add('ver'));
-      const finA = hasta(V[0], RITMO.a.fin, false, 12000);
-      await p0; mostrar(0);
-      musica.tension('a', (RITMO.a.fin - RITMO.a.ini) / RITMO.a.vel);
-      cuando(V[0], 1.0, () => sfx.lance()); cuando(V[0], 3.2, () => sfx.chapuzon(.9));
-      cargar(V[1], st.url.b, true);
-      await finA;
-      st.fase = 'b'; marcaT('b');
-      await reproducir(V[1], RITMO.b.vel); mostrar(1); V[0].pause();
-      $('#pv-atento').classList.add('ver'); sfx.suspenso(RITMO.b.ms / 1000 + .3); musica.tension('b', RITMO.b.ms / 1000 + .15);
-      cargar(V[0], st.url.c); try { V[0].currentTime = RITMO.c.ini; } catch (e) {}
-      await espera(RITMO.b.ms);
-      st.fase = 'c'; marcaT('c'); $('#pv-atento').classList.remove('ver');
-      const finC = finVideo(V[0], 20000);
-      await reproducir(V[0], RITMO.c.vel, RITMO.c.ini); mostrar(0);
-      const cFin = (st.c && +st.c.tFin) || 4.125, cCofre = (st.c && +st.c.tCofre) || 3.75;
-      musica.tension('c', (cFin - .15 * RITMO.c.vel - RITMO.c.ini) / RITMO.c.vel);
-      hasta(V[0], RITMO.c.pique, false, 8000).then(() => { marcaT('pique'); sfx.pique(); sfx.carrete((cCofre - RITMO.c.pique) / RITMO.c.vel); }, () => {});
-      cuando(V[0], cCofre - .05, () => sfx.cofreAgua());
-      cuando(V[0], cFin - .15 * RITMO.c.vel, () => musica.silencio());
-      setTimeout(() => V[1].pause(), 200);
-      if (st.url.m) cargar(V[1], st.url.m);
-      await finC;
-      cofre = true; marcaT('cofre');
-      explosion();
-      if (st.url.m) {
-        try {
-          st.fase = 'm'; marcaT('m');
-          const fin = hasta(V[1], st.tMarco);
-          await reproducir(V[1], RITMO.m.vel); mostrar(1); sfx.marco(st.tMarco / RITMO.m.vel);
-          await fin;
-        } catch (e) { console.warn('M falló, marco CSS', e); mostrar(0); cssMarco = true; }
-      } else await espera(reducido.matches ? 100 : 450);
-      mostrarPremio(res, cssMarco);
-      await new Promise(ok => {
-        const bt = $('#pv-volver'); raiz.classList.add('fin');
-        setTimeout(() => bt.focus({ preventScroll: true }), 350);
-        bt.onclick = () => { bt.onclick = null; sfx.volver(); ok(); };
-      });
+      const ev = [
+        { t: R.a2.en, v: V.a, ct: R.a2.ct, fn: () => vel(V.a, R.a2.vel) },
+        { t: R.a3.en, v: V.a, ct: R.a3.ct, fn: () => {
+          vel(V.a, R.a3.vel); st.fase = 'b'; marcaT('b'); $('#pv-atento').classList.add('ver');
+          if (red()) return; const z = R.a3; V.a.style.transformOrigin = `${z.ox * 100}% ${z.oy * 100}%`;
+          V.a.animate([{ transform: 'none' }, { transform: `translate(${z.tx}%,${z.ty}%) scale(${z.zoom})` }], { duration: z.zMs, easing: 'cubic-bezier(.3,0,.2,1)', fill: 'forwards' });
+        } },
+        { t: R.c1.en, fn: () => {
+          st.fase = 'c'; corte(V.a, V.c); vel(V.c, R.c1.vel); arrancar(V.c); V.a.pause();
+          $('#pv-atento').classList.remove('ver'); marcaT('c'); marcaT('pique');
+          flash([{ opacity: R.c1.flashOp }, { opacity: 0 }], R.c1.flashMs, true);
+          if (!red()) V.c.animate([{ transform: `scale(${R.c1.zo})` }, { transform: 'none' }], { duration: R.c1.zoMs, easing: 'ease-out' });
+          sacude(R.c1.sacMs, 1);
+        } },
+        { t: R.c2.en, fn: () => {
+          if (red()) return; const z = R.c2, cw = cuadro.clientWidth;
+          const pan = Math.min(z.pan, Math.max(0, (cw - raiz.clientWidth) / 2) + cw * .03);
+          V.c.animate([{ transform: 'none' }, { transform: `translateX(${-pan}px) scale(${z.zoom})` }], { duration: z.ms, easing: 'ease-in-out', fill: 'forwards' });
+        } },
+        { t: R.c3.en, fn: () => { V.c.pause(); sacude(R.c3.ms, .35); } },
+        { t: R.m1.en, fn: () => {
+          cofre = true; marcaT('cofre'); const z = R.m1;
+          flash([{ opacity: .95 }, { opacity: .95, offset: z.sube / (z.sube + z.baja) }, { opacity: 0 }], z.sube + z.baja, false);
+          sacude(z.sacMs, 1);
+          if (!G.conM) { marcaT('m'); return; }
+          st.fase = 'm'; marcaT('m'); corte(V.c, V.m); vel(V.m, z.vel);
+          V.m.onerror = () => sinM(new Error('error de video'));
+          try { const p = V.m.play(); if (p && p.catch) p.catch(sinM); } catch (e) { sinM(e); }
+          if (!red()) V.m.animate([{ transform: `scale(${z.golpe})` }, { transform: 'none' }], { duration: 300, easing: 'ease-out' });
+        } },
+        { t: R.m2.en, fn: () => { if (!sinM2) flash([{ opacity: 0 }, { opacity: .9, offset: .45 }, { opacity: 0 }], R.m2.flashMs, true); } },
+        { t: R.m2.corte, fn: () => {
+          if (sinM2) return;
+          V.m2.style.transform = red() ? '' : `scale(${R.golpe.esc})`; corte(V.m, V.m2); vel(V.m2, 1);
+          try { const p = V.m2.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+          V.m.pause();
+        } },
+        { t: R.golpe.en, fn: () => {
+          if (sinM2 || red()) return; V.m2.style.transform = '';
+          V.m2.animate([{ transform: `scale(${R.golpe.esc})` }, { transform: 'none' }], { duration: R.golpe.ms, easing: 'cubic-bezier(.2,.9,.3,1)' });
+        } },
+        { t: G.premio, fn: () => { mostrarPremio(res, cssMarco, { ms: G.ms, retraso: (G.cuenta - G.premio) * 1000, mudo: true }); } },
+        { t: G.fin, fn: () => {
+          if (red()) return; lienzo(); const p = punto($('#pv-pago'));
+          for (let i = 0; i < 24; i++) chispa(p.x, p.y, '#ffd34a', 380, .8, 2.4); motor();
+        } },
+        { t: G.boton, fn: () => { marcaT('boton'); raiz.classList.add('fin'); const bt = $('#pv-volver'); setTimeout(() => bt.focus({ preventScroll: true }), 350); } },
+      ];
+      const L = linea(ev, id, G.T0); p0.catch(e => st.mal && st.mal(e));
+      await L;
+      if (st.id !== id) return;
+      await new Promise(ok => { const bt = $('#pv-volver'); bt.onclick = () => { bt.onclick = null; sfx.volver(); ok(); }; });
       raiz.classList.remove('ver'); await espera(260);
       limpiar();
     } catch (e) {
       console.warn('pirámide en video falló', e);
       if (!cofre) { limpiar(); return pescar(res, b); }
-      mostrarPremio(res, true); await espera(1800); limpiar();
+      cancelAnimationFrame(st.raf); mostrarPremio(res, true); await espera(1800); limpiar();
     }
     const dt = ahora() - estado.t0; if (dt < 2500) await espera(2500 - dt);
     estado.ocupado = false; bloquearMaravillas(false);
   }
 
   precargar();
-  return { get listo() { return st.listo; }, get fase() { return st.fase; }, get m() { return !!st.url.m; }, get rect() { return st.rect; }, get tMarco() { return st.tMarco; }, jugar };
+  return { get listo() { return st.listo; }, get fase() { return st.fase; }, get m() { return !!st.url.m; }, get rect() { return st.rect; }, get tMarco() { return st.tMarco; }, get guion() { return window.__mvGuion; }, jugar };
 })();
 window.PV = PV;
 window.medirPesca = medirPesca; window.cuadro = cuadro;
