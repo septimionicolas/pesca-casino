@@ -552,19 +552,35 @@ RAREZAS.forEach(r => existe(`img/pez-${r}.png`)); ['img/boya.png', 'img/cana.png
 /* =========================================================
    AUDIO (Web Audio sintetizado)  @@AUDIO
    ========================================================= */
-let actx = null, amaster = null, aruido = null;
+/* buses: música (bMus → bDuck) y efectos (bSfx) → amaster (♪) → compresor → limitador → salida.
+   Todo se planifica con el reloj de audio; una cola con lookahead crea los nodos justo antes de sonar. */
+let actx = null, amaster = null, aruido = null, bMus = null, bDuck = null, bSfx = null, medidor = null;
+const VOL = { master: .8, mus: .5, sfx: .8 };
+const NODOS = { n: 0, max: 0, creados: 0 };
+const nodoVive = k => { NODOS.n += k; if (k > 0) NODOS.creados += k; if (NODOS.n > NODOS.max) NODOS.max = NODOS.n; };
+const soltar = (...ns) => { ns.forEach(x => { if (x) try { x.disconnect(); } catch (e) {} }); nodoVive(-ns.filter(Boolean).length); };
+const MEDIDA = { on: false, pico: 0, buf: null };
 const audio = {
+  creadoEn: 0,
   desbloquear() {
     try {
       if (!actx) {
         const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
-        actx = new AC();
+        actx = new AC(); audio.creadoEn = ahora();
         const comp = actx.createDynamicsCompressor();
-        comp.threshold.value = -16; comp.knee.value = 10; comp.ratio.value = 4; comp.attack.value = .003; comp.release.value = .2;
-        amaster = actx.createGain(); amaster.gain.value = estado.sonido ? .85 : 0;
-        amaster.connect(comp); comp.connect(actx.destination);
+        comp.threshold.value = -18; comp.knee.value = 10; comp.ratio.value = 3; comp.attack.value = .005; comp.release.value = .25;
+        const lim = actx.createDynamicsCompressor();
+        lim.threshold.value = -3; lim.knee.value = 0; lim.ratio.value = 20; lim.attack.value = .001; lim.release.value = .1;
+        amaster = actx.createGain(); amaster.gain.value = estado.sonido ? VOL.master : 0;
+        bMus = actx.createGain(); bMus.gain.value = VOL.mus;
+        bDuck = actx.createGain(); bDuck.gain.value = 1;
+        bSfx = actx.createGain(); bSfx.gain.value = VOL.sfx;
+        bMus.connect(bDuck); bDuck.connect(amaster); bSfx.connect(amaster);
+        amaster.connect(comp); comp.connect(lim); lim.connect(actx.destination);
+        medidor = actx.createAnalyser(); medidor.fftSize = 1024; amaster.connect(medidor);
         const n = actx.sampleRate * 1.5 | 0; aruido = actx.createBuffer(1, n, actx.sampleRate);
         const d = aruido.getChannelData(0); for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+        musica.armar(); reloj.arrancar();
       }
       if (actx.state === 'suspended' && !document.hidden) actx.resume();
     } catch (e) { actx = null; }
@@ -572,29 +588,55 @@ const audio = {
   sonido(si) {
     estado.sonido = si;
     try { localStorage.setItem('mv-sonido', si ? '1' : '0'); } catch (e) {}
-    if (amaster) amaster.gain.setTargetAtTime(si ? .85 : 0, actx.currentTime, .03);
+    if (amaster) { const g = amaster.gain, t = actx.currentTime; g.cancelScheduledValues(t); g.setValueAtTime(g.value, t); g.linearRampToValueAtTime(si ? VOL.master : 0, t + .08); }
     if (!si && sfx.cortar) sfx.cortar();
+  },
+  /* baja la música mientras suena un efecto fuerte */
+  duck(prof = .5, dur = .6, t = 0) {
+    if (!bDuck) return;
+    const g = bDuck.gain, t0 = actx.currentTime + t;
+    g.cancelScheduledValues(t0); g.setTargetAtTime(1 - prof, t0, .015); g.setTargetAtTime(1, t0 + dur, .3);
   },
 };
 const listo = () => actx && actx.state === 'running' && estado.sonido;
-function env(g, t, a, pico, dur) { g.gain.setValueAtTime(.0001, t); g.gain.linearRampToValueAtTime(pico, t + a); g.gain.exponentialRampToValueAtTime(.0001, t + a + dur); }
-function tono(f, { tipo = 'sine', t = 0, a = .005, dur = .2, vol = .2, f2 = 0, det = 0, dest = null } = {}) {
-  const t0 = actx.currentTime + t, o = actx.createOscillator(), g = actx.createGain();
-  o.type = tipo; o.frequency.setValueAtTime(f, t0); o.detune.value = det; if (f2) o.frequency.exponentialRampToValueAtTime(f2, t0 + a + dur);
-  env(g, t0, a, vol, dur); o.connect(g); g.connect(dest || amaster); o.start(t0); o.stop(t0 + a + dur + .05);
-  vivos.add(o); o.onended = () => vivos.delete(o);
+function env(g, t, a, pico, dur, sos = 0) {
+  g.gain.setValueAtTime(.0001, t); g.gain.linearRampToValueAtTime(pico, t + a);
+  if (sos) g.gain.setValueAtTime(pico, t + a + sos);
+  g.gain.exponentialRampToValueAtTime(.0001, t + a + sos + dur);
+}
+function tono(f, { tipo = 'sine', t = 0, en = null, a = .005, dur = .2, sos = 0, vol = .2, f2 = 0, det = 0, dest = null, filtro = null } = {}) {
+  const t0 = en != null ? en : actx.currentTime + t, o = actx.createOscillator(), g = actx.createGain(), fin = t0 + a + sos + dur;
+  o.type = tipo; o.frequency.setValueAtTime(f, t0); o.detune.value = det; if (f2) o.frequency.exponentialRampToValueAtTime(f2, fin);
+  env(g, t0, a, vol, dur, sos);
+  let fl = null;
+  if (filtro) { fl = actx.createBiquadFilter(); fl.type = filtro.tipo || 'lowpass'; fl.frequency.setValueAtTime(filtro.f, t0); fl.Q.value = filtro.q || 1; if (filtro.f2) fl.frequency.exponentialRampToValueAtTime(filtro.f2, fin); o.connect(fl); fl.connect(g); }
+  else o.connect(g);
+  g.connect(dest || bSfx); o.start(t0); o.stop(fin + .05); nodoVive(fl ? 3 : 2);
+  vivos.add(o); o.onended = () => { vivos.delete(o); soltar(o, fl, g); };
   return o;
 }
-function soplo({ t = 0, a = .01, dur = .3, vol = .2, tipo = 'bandpass', f = 1200, f2 = 0, q = 1 } = {}) {
-  const t0 = actx.currentTime + t, s = actx.createBufferSource(), fl = actx.createBiquadFilter(), g = actx.createGain();
+function soplo({ t = 0, en = null, a = .01, dur = .3, vol = .2, tipo = 'bandpass', f = 1200, f2 = 0, q = 1, dest = null } = {}) {
+  const t0 = en != null ? en : actx.currentTime + t, s = actx.createBufferSource(), fl = actx.createBiquadFilter(), g = actx.createGain();
   s.buffer = aruido; s.loop = true; fl.type = tipo; fl.frequency.setValueAtTime(f, t0); fl.Q.value = q;
   if (f2) fl.frequency.exponentialRampToValueAtTime(f2, t0 + a + dur);
-  env(g, t0, a, vol, dur); s.connect(fl); fl.connect(g); g.connect(amaster);
-  s.start(t0, Math.random()); s.stop(t0 + a + dur + .05);
-  vivos.add(s); s.onended = () => vivos.delete(s);
+  env(g, t0, a, vol, dur); s.connect(fl); fl.connect(g); g.connect(dest || bSfx);
+  s.start(t0, Math.random()); s.stop(t0 + a + dur + .05); nodoVive(3);
+  vivos.add(s); s.onended = () => { vivos.delete(s); soltar(s, fl, g); };
   return s;
 }
+/* campana / marimba FM (portadora + moduladora) */
+function fm(f, { t = 0, en = null, vol = .06, dur = .6, ratio = 3.5, idx = 2, dest = null } = {}) {
+  const t0 = en != null ? en : actx.currentTime + t, c = actx.createOscillator(), m = actx.createOscillator(), mg = actx.createGain(), g = actx.createGain();
+  c.frequency.value = f; m.frequency.value = f * ratio;
+  mg.gain.setValueAtTime(f * idx, t0); mg.gain.exponentialRampToValueAtTime(f * .02 + 1, t0 + dur * .7);
+  m.connect(mg); mg.connect(c.frequency); env(g, t0, .002, vol, dur); c.connect(g); g.connect(dest || bSfx);
+  c.start(t0); m.start(t0); c.stop(t0 + dur + .06); m.stop(t0 + dur + .06); nodoVive(4);
+  vivos.add(c); vivos.add(m); m.onended = () => vivos.delete(m);
+  c.onended = () => { vivos.delete(c); soltar(c, m, mg, g); };
+  return c;
+}
 const vivos = new Set();
+const m2f = n => 440 * Math.pow(2, (n - 69) / 12);
 /* nunca el mismo efecto 3 veces seguidas: cada llamada elige una variante (tono/timbre) distinta de las 2 anteriores si se repiten */
 const historial = {};
 function variante(nombre, n = 4) {
@@ -604,19 +646,289 @@ function variante(nombre, n = 4) {
   return v;
 }
 const SEMI = [0, 2, -2, 3, -3, 5];
+const pv = (nombre, n = 4) => Math.pow(2, SEMI[variante(nombre, n)] / 12) * (1 + (Math.random() - .5) * .02);
+
+/* ---------- reloj: cola de eventos con lookahead sobre actx.currentTime ---------- */
+const reloj = (() => {
+  const LOOK = .15, TICK = 25, cola = []; let timer = null;
+  function tick() {
+    timer = setTimeout(tick, TICK);
+    if (!actx || actx.state !== 'running') return;
+    const ya = actx.currentTime, hasta = ya + LOOK;
+    musica.programar(ya, hasta);
+    for (let i = cola.length - 1; i >= 0; i--) {
+      const e = cola[i];
+      if (e.t < hasta) { cola.splice(i, 1); if (e.t > ya - .05 && estado.sonido) try { e.fn(Math.max(e.t, ya)); } catch (err) { console.warn(err); } }
+    }
+    if (MEDIDA.on && medidor) {
+      const b = MEDIDA.buf || (MEDIDA.buf = new Float32Array(medidor.fftSize)); medidor.getFloatTimeDomainData(b);
+      for (let i = 0; i < b.length; i++) { const v = Math.abs(b[i]); if (v > MEDIDA.pico) MEDIDA.pico = v; }
+    }
+  }
+  return {
+    arrancar() { if (!timer) tick(); },
+    /* fn(tAbs) se llama ~150 ms antes de t (segundos desde ahora) */
+    en(t, fn) { if (actx) cola.push({ t: actx.currentTime + t, fn }); },
+    vaciar() { cola.length = 0; },
+    get cola() { return cola.length; },
+  };
+})();
+
+/* ---------- música: groove de casino en Do mayor, 116 BPM, corcheas con swing ---------- */
+const musica = (() => {
+  const BPM = 116, NEGRA = 60 / BPM, COMPAS = NEGRA * 4, SWING = .62;
+  const AC = {
+    C: [36, [60, 64, 67, 71]], Am: [33, [57, 60, 64, 67]], Dm: [38, [57, 60, 62, 65]], G7: [31, [55, 59, 62, 65]],
+    Em: [40, [55, 59, 62, 64]], A7: [33, [57, 61, 64, 67]], F: [41, [57, 60, 64, 65]], E7: [40, [56, 59, 62, 64]],
+  };
+  const PROG = { A: ['C', 'Am', 'Dm', 'G7', 'Em', 'A7', 'Dm', 'G7'], B: ['F', 'Em', 'Dm', 'G7', 'C', 'A7', 'Dm', 'G7'], C: ['C', 'Am', 'F', 'G7', 'Em', 'A7', 'Dm', 'G7'] };
+  const ARP = { A: [0, 2, 1, 3, 2, 1, 3, -1], B: [3, -1, 2, 0, 3, -1, 1, 2], C: [0, -1, -1, 2, -1, -1, 3, -1] };
+  const SECC = ['A', 'A', 'B', 'C'];
+  let on = false, t0c = 0, paso = 0, compas = 0, jinHasta = 0, gLobby, gTen, gJin, gPiano, lfo;
+  const LOG = [];
+  const ten = { on: false, k0: 0, k1: 0, tk0: 0, tk1: 1, golpe: 0, latido: 0, ped: null };
+  function armar() {
+    gLobby = actx.createGain(); gLobby.gain.value = 0; gLobby.connect(bMus);
+    gTen = actx.createGain(); gTen.gain.value = 0; gTen.connect(bMus);
+    gJin = actx.createGain(); gJin.gain.value = 1; gJin.connect(bMus);
+    gPiano = actx.createGain(); gPiano.gain.value = .75; gPiano.connect(gLobby);
+    lfo = actx.createOscillator(); lfo.frequency.value = 4.6; const prof = actx.createGain(); prof.gain.value = .22;
+    lfo.connect(prof); prof.connect(gPiano.gain); lfo.start();
+  }
+  const tPaso = i => t0c + Math.floor(i / 2) * NEGRA + (i % 2 ? SWING * NEGRA : 0);
+  function voces(i, t, sec, cb) {
+    const nombre = PROG[sec][cb % 8], [raiz, ac] = AC[nombre], sig = AC[PROG[sec][(cb + 1) % 8]][0];
+    const quiebre = sec === 'C' && cb % 8 < 4, d = gLobby;
+    /* batería */
+    if ((i === 0 || i === 4) && !quiebre) { tono(140, { en: t, f2: 44, a: .002, dur: .22, vol: .42, dest: d }); }
+    if ((i === 2 || i === 6) && !(quiebre && i === 2)) {
+      for (let k = 0; k < 3; k++) soplo({ en: t + k * .011, a: .001, dur: k < 2 ? .02 : .13, vol: .1, f: 1300, q: .9, dest: d });
+    }
+    soplo({ tipo: 'highpass', en: t, a: .001, dur: i % 2 ? .05 : .03, vol: i % 2 ? .05 : .028, f: 7500, dest: d });
+    if (i === 7 && cb % 2) soplo({ tipo: 'highpass', en: t, a: .002, dur: .22, vol: .035, f: 6500, dest: d });
+    /* bajo con swing */
+    const BAJO = { 0: [0, .34], 3: [7, .2], 4: [12, .16], 6: [7, .14], 7: [sig - raiz + (sig > raiz ? -1 : 1), .12] };
+    if (BAJO[i] && !(quiebre && i > 0 && i < 6)) {
+      const f = m2f(raiz + BAJO[i][0]);
+      tono(f, { tipo: 'sawtooth', en: t, a: .004, dur: BAJO[i][1], vol: .11, filtro: { f: 900, f2: 220, q: 3 }, dest: d });
+      tono(f, { en: t, a: .004, dur: BAJO[i][1], vol: .1, dest: d });
+    }
+    /* acordes: e-piano (con trémolo) o, en el quiebre, órgano suave */
+    if (sec === 'C' && cb % 8 < 4) {
+      if (i === 0) ac.forEach(n => tono(m2f(n), { tipo: 'square', en: t, a: .12, sos: COMPAS * .6, dur: .5, vol: .012, filtro: { f: 1100, q: .5 }, dest: gPiano }));
+    } else if (i === 0 || i === 3) {
+      const largo = i === 0 ? 1.1 : .35, v = i === 0 ? .032 : .022;
+      ac.forEach((n, j) => { const f = m2f(n); tono(f, { en: t + j * .004, a: .004, dur: largo, vol: v, dest: gPiano }); tono(f * 2, { en: t, a: .002, dur: largo * .35, vol: v * .3, dest: gPiano }); });
+    }
+    /* arpegio de campana (A), marimba (B) o espaciado (C) */
+    const nota = ARP[sec][i];
+    if (nota >= 0 && !(sec === 'A' && cb % 8 === 7 && i > 4)) {
+      const f = m2f(ac[nota] + 12);
+      if (sec === 'B') fm(f, { en: t, vol: .045, dur: .28, ratio: 4, idx: 1.2, dest: d });
+      else fm(f, { en: t, vol: .032, dur: .5, ratio: 3.5, idx: sec === 'C' ? 1.4 : 2, dest: d });
+    }
+  }
+  /* capa de tensión: latido grave, redoble de caja que acelera, pedal que sube */
+  const kT = t => ten.k0 + (ten.k1 - ten.k0) * clamp((t - ten.tk0) / (ten.tk1 - ten.tk0), 0, 1);
+  function tension(ya, hasta) {
+    if (!ten.on) return;
+    if (!estado.sonido) { ten.latido = Math.max(ten.latido, hasta); ten.golpe = Math.max(ten.golpe, hasta); return; }
+    while (ten.latido < hasta) {
+      const t = Math.max(ten.latido, ya), k = kT(t);
+      tono(62, { en: t, f2: 40, a: .006, dur: .16, vol: .32 + .2 * k, dest: gTen });
+      tono(56, { en: t + .17, f2: 38, a: .006, dur: .2, vol: .22 + .15 * k, dest: gTen });
+      ten.latido = t + lerp(.86, .42, k);
+    }
+    while (ten.golpe < hasta) {
+      const t = Math.max(ten.golpe, ya), k = kT(t);
+      if (k >= .3) {
+        const v = .03 + .1 * k;
+        soplo({ en: t, a: .001, dur: .07, vol: v, f: 1900, q: .8, dest: gTen });
+        tono(190, { tipo: 'triangle', en: t, f2: 130, a: .001, dur: .05, vol: v * .7, dest: gTen });
+      }
+      ten.golpe = t + (k < .3 ? NEGRA / 2 : lerp(NEGRA / 2, .034, Math.pow((k - .3) / .7, 1.3)));
+    }
+  }
+  function programar(ya, hasta) {
+    tension(ya, hasta);
+    if (!on) return;
+    while (tPaso(paso) < hasta) {
+      const t = tPaso(paso);
+      if (paso === 0 && LOG.length < 64) LOG.push({ compas, t: +t.toFixed(4), adelanto: +(t - ya).toFixed(4) });
+      if (estado.sonido && t >= ya - .01) voces(paso, Math.max(t, ya), SECC[Math.floor(compas / 8) % 4], compas);
+      if (++paso === 8) { paso = 0; compas++; t0c += COMPAS; }
+    }
+  }
+  const rampa = (g, v, dur, t = 0) => { const a = actx.currentTime + t, p = g.gain; p.cancelScheduledValues(a); p.setValueAtTime(p.value, a); p.linearRampToValueAtTime(v, a + dur); };
+  return {
+    armar, programar, LOG, COMPAS,
+    iniciar() { if (!actx || on) return; on = true; t0c = actx.currentTime + .12; paso = 0; compas = 0; rampa(gLobby, 1, 2.5); },
+    /* pesca: el lobby se aparta y entra la tensión, en sincronía con los tramos */
+    tension(fase, seg) {
+      if (!actx) return;
+      const t = actx.currentTime, K = { a: [.08, .3], b: [.3, .5], c: [.5, 1] }[fase];
+      if (fase === 'a') {
+        rampa(gLobby, .14, .5);
+        ten.on = true; ten.latido = t + .05; ten.golpe = t + .05; rampa(gTen, 1, .3);
+        if (!ten.ped) {
+          const o = actx.createOscillator(), o2 = actx.createOscillator(), fl = actx.createBiquadFilter(), g = actx.createGain();
+          o.type = 'sawtooth'; o2.type = 'sine'; o.frequency.value = 98; o2.frequency.value = 49; fl.type = 'lowpass'; fl.frequency.value = 260; fl.Q.value = 2;
+          g.gain.value = .0001; o.connect(fl); o2.connect(fl); fl.connect(g); g.connect(gTen); o.start(); o2.start(); nodoVive(4);
+          ten.ped = { o, o2, fl, g };
+        }
+      }
+      if (!K || !ten.ped) return;
+      ten.k0 = kT(t); ten.k1 = K[1]; ten.tk0 = t; ten.tk1 = t + seg;
+      const p = ten.ped, f = { a: 116.5, b: 130.8, c: 196 }[fase], fc = { a: 420, b: 700, c: 2200 }[fase], v = { a: .035, b: .05, c: .085 }[fase];
+      [[p.o.frequency, f], [p.o2.frequency, f / 2], [p.fl.frequency, fc]].forEach(([q, x]) => { q.cancelScheduledValues(t); q.setValueAtTime(q.value, t); q.exponentialRampToValueAtTime(x, t + seg); });
+      p.g.gain.cancelScheduledValues(t); p.g.gain.setValueAtTime(Math.max(.0001, p.g.gain.value), t); p.g.gain.linearRampToValueAtTime(v, t + seg);
+    },
+    /* silencio dramático antes de la explosión */
+    silencio() {
+      if (!actx) return;
+      rampa(gLobby, 0, .03); rampa(gTen, 0, .03); ten.on = false;
+      const p = ten.ped; ten.ped = null;
+      if (p) { const t = actx.currentTime + .1; p.o.stop(t); p.o2.stop(t); p.o.onended = () => soltar(p.o, p.o2, p.fl, p.g); }
+    },
+    /* jingle de victoria en Do mayor; dura según la rareza; después vuelve el lobby */
+    jingle(rareza) {
+      if (!actx) return 0;
+      rareza = { gris: 'rosa', azul: 'rosa', violeta: 'rosa' }[rareza] || rareza;
+      const L = { rosa: 1.4, rojo: 2.6, dorado: 4.8 }[rareza] || 1.4;
+      if (estado.sonido && actx.state === 'running') {
+        const t = actx.currentTime + .03, d = gJin, c = .13;
+        const lead = (n, at, dur, v = .05) => { tono(m2f(n), { tipo: 'square', en: t + at, a: .006, dur, vol: v * .5, filtro: { f: 2600, q: .7 }, dest: d }); fm(m2f(n), { en: t + at, vol: v, dur: dur + .2, ratio: 2, idx: 1, dest: d }); };
+        const acorde = (ns, at, dur, v = .028, sos = 0) => ns.forEach(n => { tono(m2f(n), { tipo: 'triangle', en: t + at, a: .01, sos, dur, vol: v, dest: d }); });
+        const bajo = (n, at, dur) => tono(m2f(n), { en: t + at, a: .005, dur, vol: .16, dest: d });
+        if (rareza === 'rosa') {
+          [67, 72, 76, 79].forEach((n, i) => lead(n, i * c, .14));
+          acorde([60, 64, 67, 72], 4 * c, .8); bajo(36, 4 * c, .7); lead(84, 4 * c, .7, .04);
+        } else if (rareza === 'rojo') {
+          [72, 74, 76, 79, 81, 79, 76, 79].forEach((n, i) => lead(n, i * c, .13));
+          acorde([57, 60, 65], 0, .5); bajo(41, 0, .5); acorde([59, 62, 67], 4 * c, .5); bajo(43, 4 * c, .5);
+          acorde([60, 64, 67, 72], 8 * c, 1.3, .03); bajo(36, 8 * c, 1.2); lead(84, 8 * c, 1.2, .045);
+        } else {
+          const tr = c * .66;
+          [67, 67, 67].forEach((n, i) => lead(n, i * tr, .1)); lead(72, 3 * tr, .5);
+          [76, 79].forEach((n, i) => lead(n, 3 * tr + .55 + i * c, .14)); lead(84, 3 * tr + .55 + 2 * c, .45);
+          const k = 3 * tr + .55 + 2 * c + .5;
+          acorde([57, 60, 65, 69], k, .35); bajo(41, k, .35); lead(81, k, .3);
+          acorde([59, 62, 65, 67], k + .4, .35); bajo(43, k + .4, .35); lead(83, k + .4, .3);
+          acorde([60, 64, 67, 71, 74], k + .8, 1.2, .024, 1.4); bajo(36, k + .8, 2.2); lead(84, k + .8, 2.4, .045);
+          /* coro: sierras desafinadas por dos filtros de vocal «aa» */
+          [60, 64, 67, 72].forEach(n => [-9, 0, 9].forEach(det => {
+            tono(m2f(n), { tipo: 'sawtooth', en: t + k + .7, a: .45, sos: 1.3, dur: 1.2, vol: .007, det, filtro: { tipo: 'bandpass', f: 780, q: 1.6 }, dest: d });
+            tono(m2f(n), { tipo: 'sawtooth', en: t + k + .7, a: .45, sos: 1.3, dur: 1.2, vol: .005, det: -det, filtro: { tipo: 'bandpass', f: 1180, q: 2 }, dest: d });
+          }));
+          for (let i = 0; i < 10; i++) tono(65.4, { en: t + k + .3 + i * .05, f2: 52, a: .003, dur: .12, vol: .05 + i * .006, dest: d });
+        }
+      }
+      rampa(gLobby, 0, .05); gLobby.gain.linearRampToValueAtTime(0, actx.currentTime + L); gLobby.gain.linearRampToValueAtTime(1, actx.currentTime + L + 3);
+      jinHasta = actx.currentTime + L;
+      return L;
+    },
+    reanudar() { if (gLobby) rampa(gLobby, 1, 1.5); },
+    /* fin de la jugada: corta la tensión si quedó prendida y devuelve el lobby (si no lo hace ya el jingle) */
+    fin() {
+      if (!actx) return;
+      if (ten.on || ten.ped) { const lob = gLobby.gain.value; musica.silencio(); rampa(gLobby, lob, .01); }
+      if (actx.currentTime > jinHasta) rampa(gLobby, 1, 1.5);
+    },
+    get on() { return on; },
+  };
+})();
+
 const sfx = {
-  clic() { if (!listo()) return; const v = variante('clic'); tono(520 * Math.pow(2, SEMI[v] / 12), { tipo: 'triangle', a: .001, dur: .05, vol: .12 }); tono(130, { a: .001, dur: .06, vol: .18, f2: 70 }); soplo({ tipo: 'highpass', f: 4000, a: .001, dur: .015, vol: .05 }); },
-  carga() { if (!listo()) return; const v = variante('carga'); const k = Math.pow(2, SEMI[v] / 12); tono(300 * k, { tipo: 'triangle', f2: 900 * k, a: .01, dur: .2, vol: .09 }); tono(600 * k, { tipo: 'sine', f2: 1800 * k, a: .01, dur: .18, vol: .04 }); soplo({ f: 900, f2: 3600, dur: .2, vol: .03 }); },
-  golpe(f = 1) { if (!listo()) return; const v = variante('golpe'); tono(160 + v * 12, { f2: 40, a: .002, dur: .26, vol: .55 * f }); soplo({ tipo: 'lowpass', f: 900, f2: 120, a: .002, dur: .18, vol: .25 * f }); soplo({ tipo: 'highpass', f: 2600, a: .001, dur: .05, vol: .12 * f }); },
-  entrada() { if (!listo()) return; soplo({ a: .2, dur: .5, vol: .07, f: 300, f2: 2400, q: 1.2 }); [392, 523.25, 659.25, 783.99].forEach((f, i) => tono(f, { tipo: 'triangle', t: .12 + i * .07, a: .01, dur: .7, vol: .06 })); },
+  clic() { if (!listo()) return; const k = pv('clic'); tono(520 * k, { tipo: 'triangle', a: .001, dur: .05, vol: .12 }); tono(130 * k, { a: .001, dur: .07, vol: .2, f2: 70 }); soplo({ tipo: 'highpass', f: 4000, a: .001, dur: .015, vol: .05 }); },
+  hover() { if (!listo()) return; const k = pv('hover'); tono(880 * k, { tipo: 'triangle', a: .003, dur: .06, vol: .04 }); tono(220 * k, { a: .003, dur: .05, vol: .06, f2: 160 }); },
+  /* carga: sube mientras se mantiene; soltar la corta */
+  carga() {
+    sfx.soltarCarga(); if (!listo()) return; const k = pv('carga');
+    const a = tono(300 * k, { tipo: 'triangle', f2: 1200 * k, a: .01, dur: .55, vol: .08 }), b = tono(600 * k, { f2: 2400 * k, a: .01, dur: .5, vol: .035 });
+    soplo({ f: 900, f2: 4200, dur: .5, vol: .03 });
+    sfx._carga = () => { const t = actx.currentTime + .03; [a, b].forEach(o => { try { o.stop(t); } catch (e) {} }); };
+  },
+  soltarCarga() { const f = sfx._carga; sfx._carga = null; if (f) f(); },
+  golpe(f = 1) { sfx.soltarCarga(); if (!listo()) return; const v = variante('golpe'); audio.duck(.45, .4); tono(160 + v * 12, { f2: 40, a: .002, dur: .26, vol: .5 * f }); soplo({ tipo: 'lowpass', f: 900, f2: 120, a: .002, dur: .18, vol: .22 * f }); soplo({ tipo: 'highpass', f: 2600, a: .001, dur: .05, vol: .1 * f }); fm(1046.5 * pv('golpe2', 3), { vol: .04, dur: .4 }); },
+  entrada() { if (!listo()) return; soplo({ a: .2, dur: .5, vol: .07, f: 300, f2: 2400, q: 1.2 }); [392, 523.25, 659.25, 783.99].forEach((f, i) => tono(f, { tipo: 'triangle', t: .12 + i * .07, a: .01, dur: .7, vol: .05 })); },
+  /* entrar al puerto (pantalla de pesca) */
+  puerto() { if (!listo()) return; const k = pv('puerto', 3); soplo({ a: .18, dur: .45, vol: .1, f: 260 * k, f2: 3000 * k, q: 1.3 }); soplo({ tipo: 'lowpass', a: .12, dur: .4, vol: .08, f: 300, f2: 900 }); },
   zumbido() { if (!listo()) return; const v = variante('zumbido', 3); soplo({ a: .03, dur: .32, vol: .16, f: 500 + v * 120, f2: 3200, q: 1.6 }); },
-  chapuzon(f = 1) { if (!listo()) return; const v = variante('chapuzon', 3); soplo({ tipo: 'lowpass', a: .004, dur: .38, vol: .32 * f, f: 2200 - v * 300, f2: 260 }); soplo({ tipo: 'bandpass', a: .01, dur: .25, vol: .12 * f, f: 3800, f2: 1500, q: .8 }); tono(240 + v * 30, { f2: 90, a: .004, dur: .16, vol: .12 * f }); },
+  /* lance: latigazo + silbido del sedal */
+  lance() { if (!listo()) return; const k = pv('lance', 3); soplo({ tipo: 'highpass', a: .04, dur: .1, vol: .2, f: 900 * k, f2: 6000 }); soplo({ a: .05, dur: .9, vol: .05, f: 3200 * k, f2: 1100, q: 6 }); tono(1900 * k, { a: .05, dur: .85, vol: .018, f2: 650 }); },
+  chapuzon(f = 1) { if (!listo()) return; const v = variante('chapuzon', 3); soplo({ tipo: 'lowpass', a: .004, dur: .38, vol: .3 * f, f: 2200 - v * 300, f2: 260 }); soplo({ tipo: 'bandpass', a: .01, dur: .25, vol: .11 * f, f: 3800, f2: 1500, q: .8 }); tono(240 + v * 30, { f2: 90, a: .004, dur: .16, vol: .12 * f }); for (let i = 0; i < 4; i++) tono(900 + Math.random() * 900, { t: .05 + i * .05 + Math.random() * .03, a: .002, dur: .05, vol: .025 * f, f2: 1800 + Math.random() * 600 }); },
   tiron(k = 0) { if (!listo()) return; const v = variante('tiron', 4); tono(180 + k * 120 + v * 10, { tipo: 'triangle', f2: 90, a: .002, dur: .09, vol: .14 }); soplo({ tipo: 'lowpass', f: 700, f2: 200, a: .002, dur: .08, vol: .08 }); },
-  suspenso(seg = 4.5) { if (!listo()) return; tono(98, { tipo: 'triangle', f2: 196, a: seg * .8, dur: seg * .2, vol: .07 }); tono(147, { tipo: 'sine', f2: 294, a: seg * .85, dur: seg * .15, vol: .05, det: 7 }); soplo({ tipo: 'bandpass', f: 300, f2: 1800, a: seg * .9, dur: .1, vol: .05, q: 3 }); },
-  candado() { if (!listo()) return; tono(1350, { tipo: 'square', f2: 700, a: .001, dur: .035, vol: .05 }); soplo({ tipo: 'bandpass', f: 2600, q: 4, a: .001, dur: .04, vol: .16 }); tono(190, { tipo: 'triangle', f2: 120, t: .07, a: .001, dur: .09, vol: .22 }); soplo({ tipo: 'bandpass', f: 1800, q: 5, t: .07, a: .001, dur: .05, vol: .12 }); },
-  pique() { if (!listo()) return; tono(70, { f2: 32, a: .002, dur: .5, vol: .7 }); soplo({ tipo: 'lowpass', f: 1200, f2: 90, a: .002, dur: .3, vol: .3 }); },
-  campana(n = 1) { if (!listo()) return; const b = [659.25, 830.61, 987.77, 1318.5]; for (let i = 0; i < n; i++) b.forEach((f, j) => tono(f * Math.pow(2, i * 2 / 12), { tipo: 'sine', t: i * .14 + j * .05, a: .003, dur: .9, vol: .05 })); },
-  cortar() { vivos.forEach(o => { try { o.stop(); } catch (e) {} }); vivos.clear(); },
+  /* carrete: clics rápidos y tirones, del pique al cofre */
+  carrete(seg) {
+    if (!listo()) return;
+    for (let t = 0, i = 0; t < seg; t += .045 + Math.random() * .012, i++) reloj.en(t, ta => { tono(2400 + Math.random() * 500, { tipo: 'square', en: ta, a: .001, dur: .012, vol: .016, filtro: { tipo: 'bandpass', f: 3000, q: 2 } }); });
+    for (let t = .25, i = 0; t < seg - .1; t += .38 + Math.random() * .1, i++) reloj.en(t, () => sfx.tiron(Math.min(1, i / 4)));
+  },
+  suspenso(seg = 4.5) { if (!listo()) return; tono(98, { tipo: 'triangle', f2: 196, a: seg * .8, dur: seg * .2, vol: .05 }); soplo({ tipo: 'bandpass', f: 300, f2: 1800, a: seg * .9, dur: .1, vol: .04, q: 3 }); },
+  /* bloqueada: cerrojo seco + zumbido corto de «no» */
+  candado() {
+    sfx.soltarCarga(); if (!listo()) return; const k = pv('candado', 3);
+    tono(1350 * k, { tipo: 'square', f2: 700, a: .001, dur: .035, vol: .04 }); soplo({ tipo: 'bandpass', f: 2600 * k, q: 4, a: .001, dur: .04, vol: .14 });
+    tono(190, { tipo: 'triangle', f2: 120, t: .07, a: .001, dur: .09, vol: .2 }); soplo({ tipo: 'bandpass', f: 1800, q: 5, t: .07, a: .001, dur: .05, vol: .1 });
+    [0, .13].forEach(t => tono(116 * k, { tipo: 'square', t: .16 + t, a: .005, dur: .09, vol: .035, filtro: { f: 700, q: 1 } }));
+  },
+  /* pique: golpe grave + campana de alerta */
+  pique() { if (!listo()) return; audio.duck(.5, .5); tono(70, { f2: 32, a: .002, dur: .5, vol: .55 }); soplo({ tipo: 'lowpass', f: 1200, f2: 90, a: .002, dur: .3, vol: .25 }); const k = pv('pique', 3); [0, .12].forEach(t => fm(1318.5 * k, { t: .03 + t, vol: .055, dur: .5, ratio: 3.5, idx: 2.4 })); },
+  /* el cofre rompe el agua */
+  cofreAgua() { if (!listo()) return; const k = pv('cofre', 3); soplo({ tipo: 'lowpass', a: .02, dur: .55, vol: .28, f: 2600 * k, f2: 300 }); soplo({ a: .01, dur: .35, vol: .1, f: 4200, f2: 1600, q: .7 }); tono(82 * k, { f2: 46, a: .01, dur: .4, vol: .28 }); },
+  campana(n = 1) { if (!listo()) return; const b = [659.25, 830.61, 987.77, 1318.5]; for (let i = 0; i < n; i++) b.forEach((f, j) => tono(f * Math.pow(2, i * 2 / 12), { tipo: 'sine', t: i * .14 + j * .05, a: .003, dur: .9, vol: .045 })); },
+  /* explosión: grave con cola larga + destello agudo */
+  explosion() {
+    if (!listo()) return; audio.duck(.8, 1.4);
+    tono(58, { f2: 26, a: .004, dur: 1.6, vol: .55 }); tono(110, { tipo: 'triangle', f2: 38, a: .004, dur: .7, vol: .22 });
+    soplo({ tipo: 'lowpass', f: 1800, f2: 70, a: .004, dur: 1.4, vol: .32 }); soplo({ tipo: 'highpass', f: 5200, t: .04, a: .05, dur: 1.5, vol: .045 });
+    [1318.5, 1661.2, 1975.5, 2637].forEach((f, j) => fm(f, { t: .08 + j * .05, vol: .035, dur: 1.1, ratio: 3.5, idx: 1.6 }));
+  },
+  /* cascada de monedas y tintineo de diamantes */
+  monedas(seg = 3) {
+    if (!listo()) return;
+    for (let t = .15; t < seg; t += .03 + Math.pow(t / seg, 2) * .16 + Math.random() * .03) reloj.en(t, ta => {
+      const f = 2300 + Math.random() * 1700, v = .03 * (1 - t / seg * .6);
+      tono(f, { tipo: 'triangle', en: ta, a: .001, dur: .07 + Math.random() * .07, vol: v }); tono(f * 2.76, { en: ta + .004, a: .001, dur: .04, vol: v * .4 });
+    });
+    for (let t = .3; t < seg; t += .18 + Math.random() * .25) reloj.en(t, ta => fm(m2f(91 + [0, 4, 7, 12][Math.random() * 4 | 0]), { en: ta, vol: .018, dur: .5, ratio: 5.1, idx: 1.2 }));
+  },
+  /* marco: golpe metálico + escalera ascendente, una nota por luz */
+  marco(seg = 4, luces = 8) {
+    if (!listo()) return;
+    const ESC = [72, 74, 76, 77, 79, 81, 83, 84];
+    for (let i = 0; i < luces; i++) reloj.en(.3 + i * (seg - .6) / (luces - 1), ta => {
+      tono(1900 + Math.random() * 300, { tipo: 'triangle', en: ta, a: .001, dur: .06, vol: .04 }); tono(4700, { en: ta, a: .001, dur: .1, vol: .012 });
+      soplo({ en: ta, a: .001, dur: .05, vol: .05, f: 5200, q: 3 }); tono(160, { en: ta, f2: 90, a: .002, dur: .08, vol: .12 });
+      fm(m2f(ESC[i % 8]), { en: ta + .01, vol: .04, dur: .45, ratio: 3.5, idx: 1.8 });
+    });
+  },
+  /* aparición del pez: acorde + destello */
+  pez() { if (!listo()) return; [84, 88, 91].forEach((n, i) => tono(m2f(n), { tipo: 'triangle', t: i * .03, a: .01, dur: .7, vol: .025 })); soplo({ tipo: 'highpass', a: .1, dur: .4, vol: .03, f: 6000 }); tono(1800, { a: .2, dur: .25, vol: .015, f2: 5200 }); },
+  /* contador: ticks que suben de tono */
+  ficha(k = 0) { if (!listo()) return; const f = 1300 * Math.pow(2, k * 1.1) * (1 + (Math.random() - .5) * .03); tono(f, { tipo: 'triangle', a: .001, dur: .04, vol: .045 }); tono(f * 2, { a: .001, dur: .025, vol: .014 }); },
+  campanita() { if (!listo()) return; fm(m2f(96), { vol: .06, dur: 1.1, ratio: 3.5, idx: 2.2 }); fm(m2f(91), { t: .02, vol: .035, dur: .9, ratio: 3.5, idx: 2 }); },
+  volver() { if (!listo()) return; const k = pv('volver', 3); [72, 79].forEach((n, i) => fm(m2f(n) * k, { t: i * .08, vol: .045, dur: .35, ratio: 2, idx: 1.2 })); soplo({ a: .08, dur: .25, vol: .05, f: 500, f2: 2600, q: 1.2 }); },
+  /* roce del planeta: ruido filtrado según la velocidad de giro (un solo nodo persistente) */
+  _giro: null, _giroT: 0,
+  giro(v) {
+    if (!actx || actx.state !== 'running') return;
+    const vv = estado.sonido ? clamp((v - .15) / 4, 0, 1) : 0, t = actx.currentTime;
+    if (vv <= .001) { if (sfx._giro && t - sfx._giroT > 1.2) { const g = sfx._giro; sfx._giro = null; g.g.gain.setTargetAtTime(0, t, .05); g.s.stop(t + .3); g.s.onended = () => soltar(g.s, g.fl, g.g); } return; }
+    sfx._giroT = t;
+    if (!sfx._giro) {
+      const s = actx.createBufferSource(), fl = actx.createBiquadFilter(), g = actx.createGain();
+      s.buffer = aruido; s.loop = true; fl.type = 'bandpass'; fl.Q.value = 1.4; fl.frequency.value = 500; g.gain.value = 0;
+      s.connect(fl); fl.connect(g); g.connect(bSfx); s.start(); nodoVive(3); sfx._giro = { s, fl, g };
+    }
+    sfx._giro.g.gain.setTargetAtTime(vv * .05, t, .06); sfx._giro.fl.frequency.setTargetAtTime(380 + vv * 1500, t, .08);
+  },
+  cortar() { vivos.forEach(o => { try { o.stop(); } catch (e) {} }); vivos.clear(); reloj.vaciar(); },
+};
+/* diagnóstico para las pruebas */
+window.__mvAudio = (cmd) => {
+  if (cmd === 'medir') { MEDIDA.on = true; MEDIDA.pico = 0; }
+  return actx ? { estado: actx.state, creadoEn: audio.creadoEn, master: amaster.gain.value, nodos: NODOS.n, nodosMax: NODOS.max, creados: NODOS.creados, fuentes: vivos.size, cola: reloj.cola, pico: +MEDIDA.pico.toFixed(3), musica: musica.on, compas: musica.COMPAS, log: musica.LOG.slice() } : null;
 };
 
 /* =========================================================
@@ -728,7 +1040,7 @@ function ubicar() {
 /* pulsación: baja a 0.96, anillo de carga 180 ms, al soltar onda y golpe */
 function conectarBoton(b, m) {
   let toque = null;
-  const soltarVisual = () => { b.classList.remove('apretado'); };
+  const soltarVisual = () => { b.classList.remove('apretado'); sfx.soltarCarga(); };
   b.addEventListener('pointerdown', e => {
     if (estado.ocupado || !estado.entro || e.button > 0) return;
     toque = { x: e.clientX, y: e.clientY, t: ahora(), id: e.pointerId };
@@ -754,7 +1066,7 @@ function conectarBoton(b, m) {
     b.classList.add('apretado'); sfx.carga();
     setTimeout(() => { soltarVisual(); disparar(m, b); }, 180);
   });
-  b.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') sfx.clic(); });
+  b.addEventListener('pointerenter', e => { if (e.pointerType === 'mouse') sfx.hover(); });
   b.addEventListener('pointermove', e => {
     if (e.pointerType !== 'mouse' || reducido.matches) return;
     const r = b.getBoundingClientRect();
@@ -872,7 +1184,7 @@ function recargar() {
 function pintarSonido() { const b = $('#b-son'); b.setAttribute('aria-pressed', String(estado.sonido)); b.setAttribute('aria-label', estado.sonido ? 'Apagar sonido' : 'Prender sonido'); }
 function entrar() {
   if (!$('#edad').checked) return;
-  audio.desbloquear(); estado.entro = true; sfx.entrada();
+  audio.desbloquear(); estado.entro = true; sfx.entrada(); musica.iniciar();
   $('#portal').classList.add('sale'); setTimeout(() => $('#portal').classList.add('oculto'), 500);
   botones.forEach((b, i) => { b.style.animationDelay = (120 + i * 70) + 'ms'; b.classList.add('entra'); });
   setTimeout(() => botones.forEach(b => { b.classList.remove('entra'); b.style.opacity = 1; b.style.animationDelay = ''; }), 1300);
@@ -1269,6 +1581,7 @@ const PV = (() => {
     }
     const t = j.tMarcoArmado ?? (j.m && j.m.tMarcoArmado);
     if (t != null && isFinite(+t)) st.tMarco = +t;
+    if (j.c && isFinite(+j.c.tFin)) st.c = j.c;
   }
   /* qué opcionales hay: se mira el listado del servidor para no pedir archivos que no existen */
   async function hay() {
@@ -1329,20 +1642,16 @@ const PV = (() => {
   addEventListener('resize', () => { if (st.corre) medir(); });
 
   /* ---------- sonido ---------- */
-  function sonExplosion() {
-    if (!listo()) return;
-    tono(62, { f2: 28, a: .004, dur: 1.1, vol: .8 });
-    tono(110, { tipo: 'triangle', f2: 40, a: .004, dur: .6, vol: .3 });
-    soplo({ tipo: 'lowpass', f: 1600, f2: 80, a: .004, dur: .9, vol: .45 });
-    for (let i = 0; i < 26; i++) {
-      const t = .1 + i * .055 + Math.random() * .04, f = 2200 + Math.random() * 2200;
-      tono(f, { tipo: 'triangle', t, a: .001, dur: .07 + Math.random() * .08, vol: .05 });
-      tono(f * 1.5, { t: t + .01, a: .001, dur: .05, vol: .022 });
-    }
-    soplo({ tipo: 'highpass', f: 5000, t: .05, a: .05, dur: 1.4, vol: .05 });
-    [659.25, 830.61, 987.77, 1318.5, 1661.2].forEach((f, j) => tono(f, { t: .35 + j * .06, a: .003, dur: 1.3, vol: .05 }));
+  /* sincroniza un efecto con el segundo t del clip que está sonando en v (sin tocar onerror) */
+  function cuando(v, t, fn) {
+    const src = v.getAttribute('src') || v.src;
+    const tick = () => {
+      if (!st.corre || (v.getAttribute('src') || v.src) !== src) return;
+      if (v.currentTime >= t || v.ended) { try { fn(); } catch (e) { console.warn(e); } return; }
+      requestAnimationFrame(tick);
+    };
+    tick();
   }
-  function ficha() { if (!listo()) return; tono(1800 + Math.random() * 500, { tipo: 'triangle', a: .001, dur: .045, vol: .06 }); tono(3600, { a: .001, dur: .03, vol: .02 }); }
 
   /* ---------- lluvia de monedas y diamantes ---------- */
   function lluvia(ms) {
@@ -1393,7 +1702,7 @@ const PV = (() => {
       const f = $('#pv-flash'); f.classList.remove('go'); void f.offsetWidth; f.classList.add('go');
       cuadro.classList.remove('sacude'); void cuadro.offsetWidth; cuadro.classList.add('sacude');
     }
-    sonExplosion(); lluvia(3200);
+    sfx.explosion(); sfx.monedas(3.2); lluvia(3200);
   }
 
   function mostrarPremio(res, cssMarco) {
@@ -1404,13 +1713,13 @@ const PV = (() => {
     $('#pv-nombre').textContent = res.pezNombre;
     $('#pv-rz').textContent = `${z.forma} ${z.nombre}`;
     if (cssMarco) marco.classList.add('ver');
-    premio.classList.add('ver');
+    premio.classList.add('ver'); sfx.pez(); musica.jingle(res.rareza);
     estado.saldo += res.pago; contarSaldo(estado.saldo, 1400);
     const el = $('#pv-pago'), t0 = ahora(), dur = red ? 300 : 1400; let ult = -1;
     const paso = () => {
       const k = clamp((ahora() - t0) / dur, 0, 1);
       el.textContent = '+' + fmt(res.pago * ease.ent(k));
-      const n = Math.floor(k * 16); if (n !== ult) { ult = n; ficha(); }
+      const n = Math.floor(k * 16); if (n !== ult) { ult = n; if (n < 16) sfx.ficha(n / 15); else sfx.campanita(); }
       if (k < 1) requestAnimationFrame(paso);
     };
     paso();
@@ -1424,12 +1733,12 @@ const PV = (() => {
     raiz.classList.remove('ver', 'fin'); raiz.classList.add('oculto');
     $('#app').classList.remove('en-pesca'); estado.escena = 'universo';
     cargar(V[0], st.url.a); cargar(V[1], st.url.b, true); try { V[0].currentTime = RITMO.a.ini; } catch (e) {}
-    $('#pv-atento').classList.remove('ver');
+    $('#pv-atento').classList.remove('ver'); musica.fin();
   }
 
   /* se llama dentro del toque: play() sincrónico */
   function jugar(res, b) {
-    st.corre = true; st.fase = 'a'; marcaT('a');
+    st.corre = true; st.fase = 'a'; marcaT('a'); sfx.puerto();
     raiz.classList.remove('oculto', 'fin'); medir();
     cargar(V[0], st.url.a);
     const p0 = reproducir(V[0], RITMO.a.vel, RITMO.a.ini);
@@ -1442,17 +1751,23 @@ const PV = (() => {
       requestAnimationFrame(() => raiz.classList.add('ver'));
       const finA = hasta(V[0], RITMO.a.fin, false, 12000);
       await p0; mostrar(0);
+      musica.tension('a', (RITMO.a.fin - RITMO.a.ini) / RITMO.a.vel);
+      cuando(V[0], 1.0, () => sfx.lance()); cuando(V[0], 3.2, () => sfx.chapuzon(.9));
       cargar(V[1], st.url.b, true);
       await finA;
       st.fase = 'b'; marcaT('b');
       await reproducir(V[1], RITMO.b.vel); mostrar(1); V[0].pause();
-      $('#pv-atento').classList.add('ver'); sfx.suspenso(RITMO.b.ms / 1000 + .3);
+      $('#pv-atento').classList.add('ver'); sfx.suspenso(RITMO.b.ms / 1000 + .3); musica.tension('b', RITMO.b.ms / 1000 + .15);
       cargar(V[0], st.url.c); try { V[0].currentTime = RITMO.c.ini; } catch (e) {}
       await espera(RITMO.b.ms);
       st.fase = 'c'; marcaT('c'); $('#pv-atento').classList.remove('ver');
       const finC = finVideo(V[0], 20000);
       await reproducir(V[0], RITMO.c.vel, RITMO.c.ini); mostrar(0);
-      hasta(V[0], RITMO.c.pique, false, 8000).then(() => marcaT('pique'), () => {});
+      const cFin = (st.c && +st.c.tFin) || 4.125, cCofre = (st.c && +st.c.tCofre) || 3.75;
+      musica.tension('c', (cFin - .15 * RITMO.c.vel - RITMO.c.ini) / RITMO.c.vel);
+      hasta(V[0], RITMO.c.pique, false, 8000).then(() => { marcaT('pique'); sfx.pique(); sfx.carrete((cCofre - RITMO.c.pique) / RITMO.c.vel); }, () => {});
+      cuando(V[0], cCofre - .05, () => sfx.cofreAgua());
+      cuando(V[0], cFin - .15 * RITMO.c.vel, () => musica.silencio());
       setTimeout(() => V[1].pause(), 200);
       if (st.url.m) cargar(V[1], st.url.m);
       await finC;
@@ -1462,7 +1777,7 @@ const PV = (() => {
         try {
           st.fase = 'm'; marcaT('m');
           const fin = hasta(V[1], st.tMarco);
-          await reproducir(V[1], RITMO.m.vel); mostrar(1);
+          await reproducir(V[1], RITMO.m.vel); mostrar(1); sfx.marco(st.tMarco / RITMO.m.vel);
           await fin;
         } catch (e) { console.warn('M falló, marco CSS', e); mostrar(0); cssMarco = true; }
       } else await espera(reducido.matches ? 100 : 450);
@@ -1470,7 +1785,7 @@ const PV = (() => {
       await new Promise(ok => {
         const bt = $('#pv-volver'); raiz.classList.add('fin');
         setTimeout(() => bt.focus({ preventScroll: true }), 350);
-        bt.onclick = () => { bt.onclick = null; sfx.clic(); ok(); };
+        bt.onclick = () => { bt.onclick = null; sfx.volver(); ok(); };
       });
       raiz.classList.remove('ver'); await espera(260);
       limpiar();
@@ -1758,6 +2073,7 @@ iniciar();
         /* sin giro solo en reposo: la Pirámide (la activa) queda al frente */
         spin -= spin * Math.min(1, dt * 1.2); yaw += spin * dt;
       }
+      if (estado.entro && dt > 0) { const dy = Math.abs(yaw - (actualizar.y0 ?? yaw)); sfx.giro(estado.escena === 'universo' ? dy / dt : 0); } actualizar.y0 = yaw;
       let ent = 0;
       if (estado.entro) { if (!tEntro) tEntro = t; ent = clamp((t - tEntro) / 900, 0, 1); }
       escala = red ? 1 : .86 + .14 * ease.ent(ent);
