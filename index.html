@@ -1825,7 +1825,7 @@ iniciar();
       return null;
     }
     U.addEventListener('pointerdown', e => {
-      if (e.button > 0 || e.target.closest('.mar, .gnav')) return;
+      if (e.button > 0 || e.target.closest('.mar, .gnav, #g-ir')) return;
       if (!estado.entro || estado.ocupado || panelAbierto || estado.escena !== 'universo') return;
       const hit = tocada(e.clientX, e.clientY);
       arr = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t: ahora(), tm: ahora(), hit, movio: false };
@@ -1836,7 +1836,7 @@ iniciar();
     });
     U.addEventListener('pointermove', e => {
       if (!arr || e.pointerId !== arr.id) {
-        if (e.pointerType === 'mouse' && !arr) U.classList.toggle('sobre', estado.entro && !estado.ocupado && !e.target.closest('.mar, .gnav') && !!tocada(e.clientX, e.clientY));
+        if (e.pointerType === 'mouse' && !arr) U.classList.toggle('sobre', estado.entro && !estado.ocupado && !e.target.closest('.mar, .gnav, #g-ir') && !!tocada(e.clientX, e.clientY));
         return;
       }
       const dx = e.clientX - arr.x, dy = e.clientY - arr.y, tn = ahora(), dtm = Math.max(1, tn - arr.tm) / 1000;
