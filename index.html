@@ -1214,7 +1214,14 @@ function disparar(m, b) {
   onda(r.left + r.width / 2, r.top + r.height / 2); sfx.golpe();
   jugar(res, b);
 }
-async function jugar(res, b) { if (res.m.id === 'piramide' && window.PV && PV.listo) return PV.jugar(res, b); return pescar(res, b); }
+async function jugar(res, b) {
+  if (res.m.id === 'piramide' && window.PV) {
+    /* si los videos todavía se están bajando, se espera (hasta 20 s) en vez de caer a la escena vieja */
+    if (!PV.listo && PV.espera) { avisar('Preparando la pesca…', 20000); await Promise.race([PV.espera, espera(20000)]); avisar('', 1); }
+    if (PV.listo) return PV.jugar(res, b);
+  }
+  return pescar(res, b);
+}
 
 /* =========================================================
    PANELES
@@ -2114,8 +2121,8 @@ const PV = (() => {
     estado.ocupado = false; bloquearMaravillas(false);
   }
 
-  precargar();
-  return { get listo() { return st.listo; }, get fase() { return st.fase; }, get m() { return !!st.url.m; }, get rect() { return st.rect; }, get tMarco() { return st.tMarco; }, get guion() { return window.__mvGuion; }, jugar };
+  const promesaPrecarga = precargar();
+  return { espera: promesaPrecarga, get listo() { return st.listo; }, get fase() { return st.fase; }, get m() { return !!st.url.m; }, get rect() { return st.rect; }, get tMarco() { return st.tMarco; }, get guion() { return window.__mvGuion; }, jugar };
 })();
 window.PV = PV;
 window.medirPesca = medirPesca; window.cuadro = cuadro;
