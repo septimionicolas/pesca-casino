@@ -1,0 +1,9 @@
+{
+  "unidad": "segundos",
+  "a": { "duracion": 7.93 },
+  "b": { "duracion": 7.417, "bucle": true },
+  "c": { "duracion": 4.125, "tPique": 1.5, "tCofre": 3.75, "tFin": 4.125 },
+  "m": { "duracion": 7.917, "tMarcoArmado": 6.5 },
+  "marcoInterior": { "x": 0.233, "y": 0.264, "ancho": 0.533, "alto": 0.443 },
+  "notas": "C se recortó con el cofre cerrado (la tapa empieza a abrirse a 4,17 s en el original). marcoInterior medido sobre el último cuadro de m.mp4, fracción de 720x1280."
+}
