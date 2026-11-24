@@ -198,6 +198,7 @@ button:focus-visible,input:focus-visible+span{outline:3px solid var(--cian);outl
 #aviso.ver{opacity:1;transform:translate(-50%,0)}
 
 #app.en-pesca #planetas{opacity:0;pointer-events:none}
+#app.en-pesca #legal{display:none}
 #planetas{transition:opacity .3s}
 #pesca{z-index:10;background:#0a0f1c}
 .p-fondo-blur{position:absolute;inset:-40px;background:#0a0f1c center/cover no-repeat;filter:blur(24px) saturate(1.15) brightness(.62)}
@@ -286,6 +287,9 @@ button:focus-visible,input:focus-visible+span{outline:3px solid var(--cian);outl
 #pv-premio.dorado #pv-halo{width:135%}
 #pv-premio.dorado #pv-img{filter:drop-shadow(0 10px 12px rgba(0,0,0,.7)) drop-shadow(0 0 14px #ffd700) drop-shadow(0 0 30px rgba(255,190,0,.7))}
 #pv-premio.dorado #pv-pez i{width:15%}
+#pv-premio.cinta #pv-pez{top:-10%;bottom:28%}
+#pv-premio.cinta #pv-nombre{position:absolute;left:50%;top:51.9cqh;transform:translate(-50%,-50%);padding:0;border-radius:0;background:none;box-shadow:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:56cqw;font-size:clamp(11px,min(4.6cqh,5.8cqw),26px);font-weight:900;letter-spacing:.02em;color:#3b2205;text-shadow:0 1px 0 rgba(255,244,210,.7),0 -1px 0 rgba(80,45,5,.35)}
+#pv-premio .solo{display:none}
 #pv-dorado{position:absolute;left:50%;top:calc(var(--st, 0px) + 9%);z-index:2;pointer-events:none;opacity:0;transform:translateX(-50%) scale(.3);white-space:nowrap;
   font:900 clamp(34px,10vmin,66px)/1 Archivo,system-ui,sans-serif;letter-spacing:.05em;color:#fff6c8;-webkit-text-stroke:2px #6a3d00;paint-order:stroke fill;
   text-shadow:0 4px 0 #6a3d00,0 0 22px #ffd700,0 0 46px rgba(255,170,0,.8)}
@@ -298,8 +302,9 @@ button:focus-visible,input:focus-visible+span{outline:3px solid var(--cian);outl
 @keyframes pvSacudeL{0%,100%{transform:none}20%{transform:translate(-4px,3px)}45%{transform:translate(4px,-3px)}70%{transform:translate(-2px,-2px)}}
 .saldo.toca{animation:saldoToca .22s ease-out}
 @keyframes saldoToca{50%{transform:scale(1.07);box-shadow:0 0 0 2px rgba(255,215,120,.7),0 0 18px rgba(255,200,70,.8)}}
-#pv-volver{position:absolute;left:50%;bottom:calc(var(--sb) + 40px);transform:translateX(-50%);opacity:0;pointer-events:none;transition:opacity .3s;z-index:2}
+#pv-volver{position:absolute;left:50%;bottom:calc(var(--sb) + 56px);transform:translateX(-50%);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .3s;z-index:2}
 #pvid.fin #pv-volver{opacity:1;pointer-events:auto}
+@media (max-width:480px){#pv-volver{padding-inline:22px}}
 #pv-atento{position:absolute;left:50%;top:calc(var(--st, 0px) + 18%);transform:translateX(-50%) scale(.9);z-index:2;pointer-events:none;opacity:0;transition:opacity .15s,transform .15s;font:900 clamp(26px,8vmin,46px)/1 Archivo,system-ui,sans-serif;letter-spacing:.04em;color:#ffe9a8;text-shadow:0 2px 0 #7a4a00,0 0 18px rgba(255,190,60,.85),0 0 4px #000}
 #pv-atento.ver{opacity:1;transform:translateX(-50%) scale(1);animation:pvlate .45s ease-in-out infinite alternate}
 @keyframes pvlate{to{transform:translateX(-50%) scale(1.08)}}
@@ -557,11 +562,11 @@ const RZ = {
   dorado:  { nombre: 'Dorado',     forma: '♛', color: '#FFD700' },
 };
 const PECES = {
-  gris: [['mojarra', 'Mojarra'], ['sabalo', 'Sábalo'], ['bagre', 'Bagre']],
-  azul: [['boga', 'Boga'], ['tararira', 'Tararira'], ['pejerrey', 'Pejerrey']],
-  violeta: [['pacu', 'Pacú'], ['surubi', 'Surubí']],
-  rosa: [['manguruyu', 'Manguruyú'], ['raya', 'Raya de río']],
-  rojo: [['arapaima', 'Arapaima'], ['pez-vela', 'Pez vela']],
+  gris: [['besugo', 'Besugo Plateado']],
+  azul: [['caballa', 'Caballa Zafiro']],
+  violeta: [['angel', 'Pez Ángel']],
+  rosa: [['betta', 'Betta Real']],
+  rojo: [['leon', 'Pez León Rubí']],
   dorado: [['dorado', 'Dorado']],
 };
 const MARAVILLAS = [
@@ -1993,6 +1998,8 @@ const PV = (() => {
     premio.classList.toggle('dorado', res.rareza === 'dorado');
     $('#pv-nombre').textContent = res.pezNombre;
     $('#pv-rz').textContent = `${z.forma} ${z.nombre}`;
+    $('#pv-rz').classList.toggle('solo', res.pezNombre === z.nombre); /* el dorado se llama igual que su rareza: un solo rótulo */
+    premio.classList.toggle('cinta', !cssMarco); /* marco del video: el nombre va grabado en la cinta de abajo */
     if (cssMarco) marco.classList.add('ver');
     premio.classList.add('ver'); if (!mudo) sfx.pez(res.rareza === 'dorado'); musica.jingle(res.rareza); impactoPez(z.color, res.rareza === 'dorado');
     estado.saldo += res.pago;
@@ -2017,7 +2024,7 @@ const PV = (() => {
       v.getAnimations().forEach(x => x.cancel()); v.style.transform = ''; vel(v, 1);
     });
     cuadro.getAnimations().forEach(x => x.cancel()); $('#pv-flash').getAnimations().forEach(x => x.cancel());
-    marco.classList.remove('ver'); premio.classList.remove('ver', 'dorado'); cuadro.classList.remove('sacude', 'sacude-l');
+    marco.classList.remove('ver'); premio.classList.remove('ver', 'dorado', 'cinta'); cuadro.classList.remove('sacude', 'sacude-l');
     $('#pv-flash').classList.remove('go', 'suave'); $('#pv-dorado').classList.remove('ver');
     raiz.classList.remove('ver', 'fin'); raiz.classList.add('oculto');
     $('#app').classList.remove('en-pesca'); estado.escena = 'universo';
@@ -2410,7 +2417,7 @@ iniciar();
         o.el.style.opacity = o.alfa.toFixed(3);
         o.el.style.zIndex = Math.round(o.c * 1000) + 1000;
         o.el.style.visibility = o.alfa > .001 ? 'visible' : 'hidden';
-        const borde = sstep(-20, 24, Math.min(sx, W - sx)), op = o.alfa * lvis * borde, lw = o.lw || (o.lw = o.b.offsetWidth), lx = clamp(sx - lw / 2, 10, W - 10 - lw), ly = clamp(sy + 4, arriba, limY - o.lh);
+        const borde = sstep(-20, 24, Math.min(sx, W - sx) + 30), op = o.alfa * lvis * borde, lw = o.lw || (o.lw = o.b.offsetWidth), lx = clamp(sx - lw / 2, 10, W - 10 - lw), ly = clamp(sy + 4, arriba, limY - o.lh);
         o.lx = lx; o.ly = ly; o.op = op;
       }
       /* etiquetas: la activa manda y va arriba; una bloqueada que pisaría otra ya puesta se esconde */
@@ -2418,7 +2425,13 @@ iniciar();
       for (const o of [...LISTA].sort((x, y) => (y.m.activa - x.m.activa) || (y.c - x.c))) {
         let op = o.op;
         if (op > .05) {
-          const pisa = puestas.some(r => o.lx < r.x + r.w + 4 && r.x < o.lx + o.lw + 4 && o.ly < r.y + r.h + 2 && r.y < o.ly + o.lh + 2);
+          const choca = y => puestas.find(r => o.lx < r.x + r.w + 4 && r.x < o.lx + o.lw + 4 && y < r.y + r.h + 2 && r.y < y + o.lh + 2);
+          const r0 = choca(o.ly);
+          if (r0 && !o.m.activa) { /* lugar libre justo abajo o arriba de la que pisa, dentro de la franja del planeta */
+            const alt = [r0.y + r0.h + 2, r0.y - o.lh - 2].find(y => y >= arriba && y <= limY - o.lh && !choca(y));
+            if (alt !== undefined) o.ly = alt;
+          }
+          const pisa = !!choca(o.ly);
           if (pisa) { o.ocul = Math.min(1, (o.ocul || 0) + dt * 8); } else { o.ocul = Math.max(0, (o.ocul || 0) - dt * 6); puestas.push({ x: o.lx, y: o.ly, w: o.lw, h: o.lh }); }
           op *= 1 - (o.ocul || 0);
         }
@@ -2450,9 +2463,10 @@ iniciar();
       return null;
     }
     U.addEventListener('pointerdown', e => {
-      if (e.button > 0 || e.target.closest('.mar, .gnav, #g-ir')) return;
+      const lb = e.target.closest('.mar'); /* la etiqueta de una bloqueada no frena el giro: el planeta toma el gesto y un toque corto igual muestra el cartelito */
+      if (e.button > 0 || e.target.closest('.gnav, #g-ir') || (lb && !lb.classList.contains('bloq'))) return;
       if (!estado.entro || estado.ocupado || panelAbierto || estado.escena !== 'universo') return;
-      const hit = tocada(e.clientX, e.clientY);
+      const hit = lb ? MV[lb.dataset.id] : tocada(e.clientX, e.clientY);
       arr = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x: e.clientX, y: e.clientY, t: ahora(), tm: ahora(), hit, movio: false };
       if (hit && hit.m.activa) { hit.b.classList.add('apretado'); sfx.carga(); }
       vYaw = vPitch = 0; spin = 0; ultimoToque = ahora(); if (giro) giro.fin();
