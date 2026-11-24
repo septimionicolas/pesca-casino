@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="es-AR">
-<head><meta name="robots" content="noindex,nofollow">
+<head><meta property="og:type" content="website"><meta property="og:site_name" content="Pesca Casino"><meta property="og:title" content="Pesca Casino · ¿Sale el Dorado?"><meta property="og:description" content="Tocá, pescá y abrí el cofre. Descubrí tu premio en el planeta de las maravillas."><meta property="og:url" content="https://septimionicolas.github.io/pesca-casino/"><meta property="og:image" content="https://septimionicolas.github.io/pesca-casino/compartir.jpg"><meta property="og:image:width" content="1200"><meta property="og:image:height" content="630"><meta property="og:image:type" content="image/jpeg"><meta name="twitter:card" content="summary_large_image"><meta name="description" content="Tocá, pescá y abrí el cofre. Descubrí tu premio en el planeta de las maravillas."><meta name="robots" content="noindex,nofollow">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="theme-color" content="#070B14">
@@ -1786,8 +1786,19 @@ iniciar();
         o.el.style.zIndex = Math.round(o.c * 1000) + 1000;
         o.el.style.visibility = o.alfa > .001 ? 'visible' : 'hidden';
         const borde = sstep(-20, 24, Math.min(sx, W - sx)), op = o.alfa * lvis * borde, lx = clamp(sx - o.lw / 2, 8, W - 8 - o.lw), ly = clamp(sy + 4, arriba, limY - o.lh);
-        o.b.style.transform = `translate3d(${lx.toFixed(1)}px,${ly.toFixed(1)}px,0)`;
-        o.b.style.zIndex = Math.round(o.c * 1000) + 1000;
+        o.lx = lx; o.ly = ly; o.op = op;
+      }
+      /* etiquetas: la activa manda y va arriba; una bloqueada que pisaría otra ya puesta se esconde */
+      const puestas = [];
+      for (const o of [...LISTA].sort((x, y) => (y.m.activa - x.m.activa) || (y.c - x.c))) {
+        let op = o.op;
+        if (op > .05) {
+          const pisa = puestas.some(r => o.lx < r.x + r.w + 4 && r.x < o.lx + o.lw + 4 && o.ly < r.y + r.h + 2 && r.y < o.ly + o.lh + 2);
+          if (pisa) { o.ocul = Math.min(1, (o.ocul || 0) + dt * 8); } else { o.ocul = Math.max(0, (o.ocul || 0) - dt * 6); puestas.push({ x: o.lx, y: o.ly, w: o.lw, h: o.lh }); }
+          op *= 1 - (o.ocul || 0);
+        }
+        o.b.style.transform = `translate3d(${o.lx.toFixed(1)}px,${o.ly.toFixed(1)}px,0)`;
+        o.b.style.zIndex = Math.round(o.c * 1000) + (o.m.activa ? 6000 : 3000);
         const ops = op.toFixed(2); if (o.b.style.opacity !== ops) o.b.style.opacity = ops;
         const pe = op > .5 ? 'auto' : 'none'; if (o.b.style.pointerEvents !== pe) o.b.style.pointerEvents = pe;
       }
